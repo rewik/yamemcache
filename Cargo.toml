@@ -4,8 +4,11 @@ version = "0.0.1"
 edition = "2021"
 authors = ["Karol Szumski <karol.szumski@gmail.com>"]
 readme = "README.md"
+repository = "https://github.com/rewik/yamemcache"
 license = "MIT"
 description = "Yet Another memcached client library"
+keywords = ["memcache", "memcached", "async"]
+categories = ["caching"]
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

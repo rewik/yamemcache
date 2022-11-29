@@ -27,15 +27,21 @@
 pub mod error;
 pub mod protocol;
 
-use protocol::FrameData;
 use error::MemcacheError;
+use protocol::FrameData;
 
 /// Helper trait that combines all the required traits for the io
-pub trait AsyncReadWriteUnpin: tokio::io::AsyncWrite + tokio::io::AsyncBufRead + std::marker::Unpin {}
-impl<T: tokio::io::AsyncWrite + tokio::io::AsyncBufRead + std::marker::Unpin> AsyncReadWriteUnpin for T {}
+pub trait AsyncReadWriteUnpin:
+    tokio::io::AsyncWrite + tokio::io::AsyncBufRead + std::marker::Unpin
+{
+}
+impl<T: tokio::io::AsyncWrite + tokio::io::AsyncBufRead + std::marker::Unpin> AsyncReadWriteUnpin
+    for T
+{
+}
 
 /// Memcached client abstraction
-pub struct Client<T:AsyncReadWriteUnpin> {
+pub struct Client<T: AsyncReadWriteUnpin> {
     protocol: protocol::Meta,
     connection: T,
 }
@@ -43,7 +49,7 @@ pub struct Client<T:AsyncReadWriteUnpin> {
 impl<T: AsyncReadWriteUnpin> Client<T> {
     /// Create a new Client instance
     pub fn new(connection: T) -> Self {
-        Client{
+        Client {
             protocol: protocol::Meta::new(),
             connection: connection,
         }

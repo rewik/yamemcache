@@ -1,11 +1,11 @@
 //! Protocol implementation
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
 use crate::error::MemcacheError;
 use crate::AsyncReadWriteUnpin;
 
-use log::{info, error};
+use log::{error, info};
 
 /// Data that can be represented when storing or reading a value
 pub struct FrameData {
@@ -20,8 +20,7 @@ pub struct FrameData {
 }
 
 /// Fake object representing the META protocol (TEXT protocol extended with additional commands)
-pub struct Meta {
-}
+pub struct Meta {}
 
 /*
 * flags set:
@@ -55,24 +54,32 @@ fn check_key_invalid(key: &str) -> bool {
 
 impl Meta {
     pub fn new() -> Self {
-        Meta{}
+        Meta {}
     }
 
     /// GET a value from memcached
     /// returns Ok(Some(x)) when key is found
     /// returns Ok(None) if key was not found
-    pub async fn get<T: AsyncReadWriteUnpin>(&self, io: &mut T, key: &str) -> Result<Option<FrameData>, MemcacheError>{
+    pub async fn get<T: AsyncReadWriteUnpin>(
+        &self,
+        io: &mut T,
+        key: &str,
+    ) -> Result<Option<FrameData>, MemcacheError> {
         // key cannot contain control characters or space
         if check_key_invalid(&key) {
             return Err(MemcacheError::BadKey);
         }
         let request = format!("mg {} f v\r\n", key).into_bytes();
-        io.write_all(&request).await
+        io.write_all(&request)
+            .await
             .and(io.flush().await)
             .map_err(|x| MemcacheError::IOError(x))?;
 
         let mut response_hdr: Vec<u8> = Vec::new();
-        let _ = io.read_until(0xA, &mut response_hdr).await.map_err(|x| MemcacheError::IOError(x))?;
+        let _ = io
+            .read_until(0xA, &mut response_hdr)
+            .await
+            .map_err(|x| MemcacheError::IOError(x))?;
         //info!("RESPONSE HDR: {}", hex::encode(&response_hdr));
 
         // header shoul be just ASCII
@@ -114,14 +121,17 @@ impl Meta {
             return Err(MemcacheError::BadServerResponse);
         };
 
-        let mut response_data: Vec<u8> = Vec::with_capacity(data_length+2);
-        response_data.resize(data_length+2,0);
-        let _ = io.read_exact(&mut response_data).await.map_err(|x| MemcacheError::IOError(x))?;
+        let mut response_data: Vec<u8> = Vec::with_capacity(data_length + 2);
+        response_data.resize(data_length + 2, 0);
+        let _ = io
+            .read_exact(&mut response_data)
+            .await
+            .map_err(|x| MemcacheError::IOError(x))?;
         //info!("RESPONSE RAW: {}", hex::encode(&response_data));
         response_data.truncate(data_length);
         //info!("RESPONSE: {}", String::from_utf8_lossy(&response_data));
 
-        Ok(Some(FrameData{
+        Ok(Some(FrameData {
             data: response_data,
             flags: flags,
             time: None,
@@ -134,17 +144,31 @@ impl Meta {
     /// None will make memcached keep the data for as long as possible (data may still be dropped
     /// if memcached reaches its memory limit)
     /// WARNING: CAS is not yet supported.
-    pub async fn set<T: AsyncReadWriteUnpin>(&self, io: &mut T, key:&str, data: &FrameData) -> Result<(), MemcacheError> {
+    pub async fn set<T: AsyncReadWriteUnpin>(
+        &self,
+        io: &mut T,
+        key: &str,
+        data: &FrameData,
+    ) -> Result<(), MemcacheError> {
         // key cannot contain control characters or space
         if check_key_invalid(&key) {
             error!("invalid key");
             return Err(MemcacheError::BadKey);
         }
-        let request = format!("ms {} S{} T{} F{}\r\n", key, data.data.len(), data.time.map(|x| x.to_string()).unwrap_or_else(|| "-1".to_string()), data.flags);
+        let request = format!(
+            "ms {} S{} T{} F{}\r\n",
+            key,
+            data.data.len(),
+            data.time
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "-1".to_string()),
+            data.flags
+        );
         info!("REQUEST: {}", request);
         let request = request.into_bytes();
-        let marker = [0x0D,0x0A];
-        io.write_all(&request).await
+        let marker = [0x0D, 0x0A];
+        io.write_all(&request)
+            .await
             .and(io.write_all(&data.data).await)
             .and(io.write_all(&marker).await)
             .and(io.flush().await)
@@ -152,7 +176,10 @@ impl Meta {
 
         info!("wait for response");
         let mut response_hdr: Vec<u8> = Vec::new();
-        let _ = io.read_until(0xA, &mut response_hdr).await.map_err(|x| MemcacheError::IOError(x))?;
+        let _ = io
+            .read_until(0xA, &mut response_hdr)
+            .await
+            .map_err(|x| MemcacheError::IOError(x))?;
         //info!("RESPONSE HDR: {}", hex::encode(&response_hdr));
 
         // header shoul be just ASCII
@@ -177,14 +204,21 @@ impl Meta {
     }
 
     /// Checks memcached server version and returns it as a string.
-    pub async fn version<T: AsyncReadWriteUnpin>(&self, io: &mut T) -> Result<String, MemcacheError> {
+    pub async fn version<T: AsyncReadWriteUnpin>(
+        &self,
+        io: &mut T,
+    ) -> Result<String, MemcacheError> {
         let request = b"version\r\n";
-        io.write_all(request).await
+        io.write_all(request)
+            .await
             .and(io.flush().await)
             .map_err(|x| MemcacheError::IOError(x))?;
 
         let mut response_hdr: Vec<u8> = Vec::new();
-        let _ = io.read_until(0xA, &mut response_hdr).await.map_err(|x| MemcacheError::IOError(x))?;
+        let _ = io
+            .read_until(0xA, &mut response_hdr)
+            .await
+            .map_err(|x| MemcacheError::IOError(x))?;
         let Ok(response_hdr) = String::from_utf8(response_hdr) else {
             return Err(MemcacheError::BadServerResponse);
         };
