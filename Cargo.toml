@@ -1,0 +1,16 @@
+[package]
+name = "yamemcache"
+version = "0.0.1"
+edition = "2021"
+authors = ["Karol Szumski <karol.szumski@gmail.com>"]
+readme = "README.md"
+license = "MIT"
+description = "Yet Another memcached client library"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+log = "0.4"
+tokio = { version="1", features=["io-util"] }
+#hex = "0.4"
