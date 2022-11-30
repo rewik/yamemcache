@@ -1,4 +1,6 @@
 //! Protocol implementation
+//!
+//! reference: [`protocol.txt`](https://github.com/memcached/memcached/blob/master/doc/protocol.txt)
 
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 
@@ -17,6 +19,33 @@ pub struct FrameData {
     pub time: Option<u32>,
     /// Key used for Compare-And-Store operations. Not used yet.
     pub cas: Option<u32>,
+}
+
+impl std::convert::From<Vec<u8>> for FrameData {
+    fn from(v: Vec<u8>) -> Self {
+        Self {
+            data: v,
+            flags: 0,
+            time: None,
+            cas: None,
+        }
+    }
+}
+impl FrameData {
+    pub fn set_time(mut self, t: Option<u32>) -> Self {
+        self.time = t;
+        self
+    }
+
+    pub fn set_cas(mut self, c: Option<u32>) -> Self {
+        self.cas = c;
+        self
+    }
+
+    pub fn set_flags(mut self, f: u32) -> Self {
+        self.flags = f;
+        self
+    }
 }
 
 /// Fake object representing the META protocol (TEXT protocol extended with additional commands)
@@ -81,12 +110,15 @@ impl Meta {
             .await
             .map_err(|x| MemcacheError::IOError(x))?;
         //info!("RESPONSE HDR: {}", hex::encode(&response_hdr));
+        if response_hdr.len() >= 2 {
+            response_hdr.truncate(response_hdr.len()-2);
+        }
 
         // header shoul be just ASCII
         let Ok(response_hdr_base) = String::from_utf8(response_hdr) else {
             return Err(MemcacheError::BadServerResponse);
         };
-        let mut response_hdr = response_hdr_base.trim().split_ascii_whitespace();
+        let mut response_hdr = response_hdr_base.split_ascii_whitespace();
 
         let Some(response_cmd) = response_hdr.next() else {
             //error!("HEADER error (EMPTY): {}", response_hdr_base);
@@ -181,13 +213,16 @@ impl Meta {
             .await
             .map_err(|x| MemcacheError::IOError(x))?;
         //info!("RESPONSE HDR: {}", hex::encode(&response_hdr));
+        if response_hdr.len() >= 2 {
+            response_hdr.truncate(response_hdr.len()-2);
+        }
 
         // header shoul be just ASCII
         let Ok(response_hdr) = String::from_utf8(response_hdr) else {
             error!("bad header");
             return Err(MemcacheError::BadServerResponse);
         };
-        let mut response_hdr = response_hdr.trim().split_ascii_whitespace();
+        let mut response_hdr = response_hdr.split_ascii_whitespace();
 
         let Some(response_cmd) = response_hdr.next() else {
             return Err(MemcacheError::BadServerResponse);
@@ -201,6 +236,41 @@ impl Meta {
                 Err(MemcacheError::BadServerResponse)
             }
         }
+    }
+
+    /// Removes a key from memcached
+    pub async fn delete<T: AsyncReadWriteUnpin>(
+        &self,
+        io: &mut T,
+        key: &str,
+    ) -> Result<Option<()>, MemcacheError> {
+        // key cannot contain control characters or space
+        if check_key_invalid(&key) {
+            error!("invalid key");
+            return Err(MemcacheError::BadKey);
+        }
+        let request = format!("delete {}\r\n", key).into_bytes();
+        io.write_all(&request)
+            .await
+            .and(io.flush().await)
+            .map_err(|x| MemcacheError::IOError(x))?;
+
+        let mut response_hdr: Vec<u8> = Vec::new();
+        let _ = io
+            .read_until(0xA, &mut response_hdr)
+            .await
+            .map_err(|x| MemcacheError::IOError(x))?;
+        if response_hdr.len() >= 2 {
+            response_hdr.truncate(response_hdr.len()-2);
+        }
+
+        if response_hdr == b"DELETED" {
+            return Ok(Some(()));
+        } else if response_hdr == b"NOT_FOUND" {
+            return Ok(None);
+        }
+        info!("Improper reponse: {}", String::from_utf8_lossy(&response_hdr));
+        Err(MemcacheError::BadServerResponse)
     }
 
     /// Checks memcached server version and returns it as a string.

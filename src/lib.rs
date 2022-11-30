@@ -65,6 +65,11 @@ impl<T: AsyncReadWriteUnpin> Client<T> {
         self.protocol.set(&mut self.connection, key, data).await
     }
 
+    /// DELETE a value from memcached attached to the provided key
+    pub async fn delete(&mut self, key: &str) -> Result<Option<()>, MemcacheError> {
+        self.protocol.delete(&mut self.connection, key).await
+    }
+
     /// Read memcached version.
     pub async fn version(&mut self) -> Result<String, MemcacheError> {
         self.protocol.version(&mut self.connection).await
