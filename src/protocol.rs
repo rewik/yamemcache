@@ -60,7 +60,7 @@ pub struct Meta {}
 
 /*
 * flags get:
-*  t = time remaing to expiration (-1) = infinite
+*  t = time remaing to expiration (0) = infinite
 *  f = flags (u32 as text)
 *  s = data size
 *  v = value
@@ -191,9 +191,7 @@ impl Meta {
             "ms {} S{} T{} F{}\r\n",
             key,
             data.data.len(),
-            data.time
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "-1".to_string()),
+            data.time.unwrap_or(0),
             data.flags
         );
         info!("REQUEST: {}", request);
