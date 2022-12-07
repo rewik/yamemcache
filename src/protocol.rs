@@ -23,7 +23,7 @@ pub struct RawValue {
     pub cas: Option<u32>,
 }
 
-impl std::convert::From<Vec<u8>> for FrameData {
+impl std::convert::From<Vec<u8>> for RawValue {
     fn from(v: Vec<u8>) -> Self {
         Self {
             data: v,
@@ -33,7 +33,7 @@ impl std::convert::From<Vec<u8>> for FrameData {
         }
     }
 }
-impl FrameData {
+impl RawValue {
     pub fn from_vec(v: Vec<u8>) -> Self {
         Self {
             data: v,
@@ -104,7 +104,7 @@ impl Meta {
         &self,
         io: &mut T,
         key: &str,
-    ) -> Result<Option<FrameData>, MemcacheError> {
+    ) -> Result<Option<RawValue>, MemcacheError> {
         debug!("get {}", key);
         // key cannot contain control characters or space
         if check_key_invalid(&key) {
@@ -177,13 +177,118 @@ impl Meta {
         response_data.truncate(data_length);
 
         debug!("get: received data");
-        Ok(Some(FrameData {
+        Ok(Some(RawValue {
             data: response_data,
             flags: flags,
             time: None,
             cas: None,
         }))
     }
+
+
+    /// GET multiple values from memcached
+    /// returns Ok(Vec((key,RawValue))) with a list of key-value tuples
+    ///
+    /// If a key is not found in the response then it does not exist currently
+    /// in memcached
+    pub async fn get_many<T: AsyncReadWriteUnpin>(
+        &self,
+        io: &mut T,
+        key_list: &[&str],
+    ) -> Result<Vec<(String, RawValue)>, MemcacheError> {
+        let mut keysize = 0;
+        for k in key_list {
+            if check_key_invalid(&k) {
+                error!("get_multi: invalid key");
+                return Err(MemcacheError::BadKey);
+            }
+            keysize += k.len();
+        }
+        //get key_1 key_2 key_3\r\n
+        //
+        //VALUE key_1 FLAG SIZE\r\n
+        //DATA\r\n
+        //VALUE key_3 FLAG SIZE\r\n
+        //DATA\r\n
+        //END\r\n
+        let mut send = String::with_capacity(10 + key_list.len() + keysize); // 5 should be enough, but
+        // let's not chance it
+        send.push_str("get");
+        for k in key_list {
+            send.push(' ');
+            send.push_str(k);
+        }
+        send.push_str("\r\n");
+        io.write_all(&send.into_bytes())
+            .await
+            .and(io.flush().await)
+            .map_err(|x| MemcacheError::IOError(x))?;
+
+        let mut retval = Vec::new();
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            let _ = io
+                .read_until(0xA, &mut buffer)
+                .await
+                .map_err(|x| MemcacheError::IOError(x))?;
+            if buffer.len() >= 2 {
+                buffer.truncate(buffer.len()-2);
+            }
+            if buffer == b"END" {
+                return Ok(retval);
+            }
+            let Ok(response) = String::from_utf8(buffer.clone()) else {
+                //error!("get_multi: non-ASCII response: {}", hex::encode(buffer));
+                error!("get_multi: non-ASCII response");
+                return Err(MemcacheError::BadServerResponse);
+            };
+            let mut response_hdr = response.split_ascii_whitespace();
+            let Some(response_cmd) = response_hdr.next() else {
+                error!("get_mutli: malformed response {}", response);
+                return Err(MemcacheError::BadServerResponse);
+            };
+            if response_cmd != "VALUE" {
+                error!("get_multi: server response error: {}", response_cmd);
+                return Err(MemcacheError::BadServerResponse);
+            }
+
+            let Some(key) = response_hdr.next() else {
+                error!("get_multi: missing key");
+                return Err(MemcacheError::BadServerResponse);
+            };
+
+            let Some(flags) = response_hdr.next().map(|x| u32::from_str_radix(x,10).ok()).flatten() else {
+                error!("get_multi: bad flags");
+                return Err(MemcacheError::BadServerResponse);
+            };
+
+            let Some(data_length) = response_hdr.next().map(|x| usize::from_str_radix(x,10).ok()).flatten() else {
+                error!("get_multi: bad data_length");
+                return Err(MemcacheError::BadServerResponse);
+            };
+
+            if response_hdr.next().is_some() {
+                error!("get_multi: header too long");
+                return Err(MemcacheError::BadServerResponse);
+            };
+
+            buffer.resize(data_length + 2, 0);
+            let _ = io
+                .read_exact(&mut buffer)
+                .await
+                .map_err(|x| MemcacheError::IOError(x))?;
+            buffer.truncate(data_length);
+
+            retval.push((key.to_string(), RawValue {
+                data: buffer.clone(),
+                flags: flags,
+                time: None,
+                cas: None,
+            }));
+        }
+    }
+
 
     /// STORE function. Stores provided data using the provided key.
     /// data.time determines for how many seconds memcached should keep the data. Setting it to
@@ -194,7 +299,7 @@ impl Meta {
         &self,
         io: &mut T,
         key: &str,
-        data: &FrameData,
+        data: &RawValue,
     ) -> Result<(), MemcacheError> {
         debug!("set {}", key);
         // key cannot contain control characters or space

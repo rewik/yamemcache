@@ -28,7 +28,7 @@ pub mod error;
 pub mod protocol;
 
 use error::MemcacheError;
-use protocol::FrameData;
+use protocol::RawValue;
 
 /// Helper trait that combines all the required traits for the io
 pub trait AsyncReadWriteUnpin:
@@ -56,12 +56,16 @@ impl<T: AsyncReadWriteUnpin> Client<T> {
     }
 
     /// GET a value from memcached based on the provided key.
-    pub async fn get(&mut self, key: &str) -> Result<Option<FrameData>, MemcacheError> {
+    pub async fn get(&mut self, key: &str) -> Result<Option<RawValue>, MemcacheError> {
         self.protocol.get(&mut self.connection, key).await
     }
 
+    pub async fn get_many(&mut self, key_list: &[&str]) -> Result<Vec<(String, RawValue)>, MemcacheError> {
+        self.protocol.get_many(&mut self.connection, key_list).await
+    }
+
     /// STORE a value in memcached using the provided key.
-    pub async fn set(&mut self, key: &str, data: &FrameData) -> Result<(), MemcacheError> {
+    pub async fn set(&mut self, key: &str, data: &RawValue) -> Result<(), MemcacheError> {
         self.protocol.set(&mut self.connection, key, data).await
     }
 
