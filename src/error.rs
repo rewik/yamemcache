@@ -1,6 +1,7 @@
 //! Error return value
 
 /// Main error type returned by yamemcache
+#[derive(Debug)]
 pub enum MemcacheError {
     /// Wrapper around the error returned by the underlying io functions
     IOError(std::io::Error),
