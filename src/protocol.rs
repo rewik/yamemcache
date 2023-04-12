@@ -7,7 +7,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use crate::error::MemcacheError;
 use crate::AsyncReadWriteUnpin;
 
-use log::{error, debug};
+use log::{debug, error};
 
 pub type FrameData = RawValue;
 
@@ -60,6 +60,7 @@ impl RawValue {
 }
 
 /// Fake object representing the META protocol (TEXT protocol extended with additional commands)
+#[derive(Debug)]
 pub struct Meta {}
 
 /*
@@ -92,6 +93,12 @@ fn check_key_invalid(key: &str) -> bool {
     false
 }
 
+impl Default for Meta {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Meta {
     pub fn new() -> Self {
         Meta {}
@@ -107,7 +114,7 @@ impl Meta {
     ) -> Result<Option<RawValue>, MemcacheError> {
         debug!("get {}", key);
         // key cannot contain control characters or space
-        if check_key_invalid(&key) {
+        if check_key_invalid(key) {
             error!("get: invalid key");
             return Err(MemcacheError::BadKey);
         }
@@ -115,16 +122,16 @@ impl Meta {
         io.write_all(&request)
             .await
             .and(io.flush().await)
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
 
         let mut response_hdr: Vec<u8> = Vec::new();
         let _ = io
             .read_until(0xA, &mut response_hdr)
             .await
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
         //debug!("RESPONSE HDR: {}", hex::encode(&response_hdr));
         if response_hdr.len() >= 2 {
-            response_hdr.truncate(response_hdr.len()-2);
+            response_hdr.truncate(response_hdr.len() - 2);
         }
 
         // header shoul be just ASCII
@@ -146,19 +153,18 @@ impl Meta {
             return Err(MemcacheError::BadServerResponse);
         }
 
-        let Some(data_length) = response_hdr.next().map(|x| usize::from_str_radix(x,10).ok()).flatten() else {
+        let Some(data_length) = response_hdr.next().and_then(|x| x.parse::<usize>().ok()) else {
             error!("get: bad data_length");
             return Err(MemcacheError::BadServerResponse);
         };
 
-        let Some(flags) = response_hdr.next().map(
-            |x| {
-                if x.bytes().nth(0) == Some(b'f') {
-                    return u32::from_str_radix(&x[1..],10).ok()
+        let Some(flags) = response_hdr.next().and_then(|x|{
+                if x.as_bytes().first() == Some(&b'f') {
+                    (x[1..]).parse::<u32>().ok()
                 } else {
-                    return None
+                    None
                 }
-            }).flatten() else {
+            }) else {
             error!("get: missing flags");
             return Err(MemcacheError::BadServerResponse);
         };
@@ -168,29 +174,30 @@ impl Meta {
             return Err(MemcacheError::BadServerResponse);
         };
 
-        let mut response_data: Vec<u8> = Vec::with_capacity(data_length + 2);
-        response_data.resize(data_length + 2, 0);
+        let mut response_data: Vec<u8> = vec![0; data_length + 2];
         let _ = io
             .read_exact(&mut response_data)
             .await
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
         response_data.truncate(data_length);
 
         debug!("get: received data");
         Ok(Some(RawValue {
             data: response_data,
-            flags: flags,
+            flags,
             time: None,
             cas: None,
         }))
     }
-
 
     /// GET multiple values from memcached
     /// returns Ok(Vec((key,RawValue))) with a list of key-value tuples
     ///
     /// If a key is not found in the response then it does not exist currently
     /// in memcached
+    // clippy complains about a read to a zero-length vector, but read_until appends data
+    // to a vector
+    #[allow(clippy::read_zero_byte_vec)]
     pub async fn get_many<T: AsyncReadWriteUnpin>(
         &self,
         io: &mut T,
@@ -198,7 +205,7 @@ impl Meta {
     ) -> Result<Vec<(String, RawValue)>, MemcacheError> {
         let mut keysize = 0;
         for k in key_list {
-            if check_key_invalid(&k) {
+            if check_key_invalid(k) {
                 error!("get_multi: invalid key");
                 return Err(MemcacheError::BadKey);
             }
@@ -212,7 +219,7 @@ impl Meta {
         //DATA\r\n
         //END\r\n
         let mut send = String::with_capacity(10 + key_list.len() + keysize); // 5 should be enough, but
-        // let's not chance it
+                                                                             // let's not chance it
         send.push_str("get");
         for k in key_list {
             send.push(' ');
@@ -222,7 +229,7 @@ impl Meta {
         io.write_all(&send.into_bytes())
             .await
             .and(io.flush().await)
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
 
         let mut retval = Vec::new();
         let mut buffer = Vec::new();
@@ -231,9 +238,9 @@ impl Meta {
             let _ = io
                 .read_until(0xA, &mut buffer)
                 .await
-                .map_err(|x| MemcacheError::IOError(x))?;
+                .map_err(MemcacheError::IOError)?;
             if buffer.len() >= 2 {
-                buffer.truncate(buffer.len()-2);
+                buffer.truncate(buffer.len() - 2);
             }
             if buffer == b"END" {
                 return Ok(retval);
@@ -258,12 +265,12 @@ impl Meta {
                 return Err(MemcacheError::BadServerResponse);
             };
 
-            let Some(flags) = response_hdr.next().map(|x| u32::from_str_radix(x,10).ok()).flatten() else {
+            let Some(flags) = response_hdr.next().and_then(|x| x.parse::<u32>().ok()) else {
                 error!("get_multi: bad flags");
                 return Err(MemcacheError::BadServerResponse);
             };
 
-            let Some(data_length) = response_hdr.next().map(|x| usize::from_str_radix(x,10).ok()).flatten() else {
+            let Some(data_length) = response_hdr.next().and_then(|x| x.parse::<usize>().ok()) else {
                 error!("get_multi: bad data_length");
                 return Err(MemcacheError::BadServerResponse);
             };
@@ -277,18 +284,20 @@ impl Meta {
             let _ = io
                 .read_exact(&mut buffer)
                 .await
-                .map_err(|x| MemcacheError::IOError(x))?;
+                .map_err(MemcacheError::IOError)?;
             buffer.truncate(data_length);
 
-            retval.push((key.to_string(), RawValue {
-                data: buffer.clone(),
-                flags: flags,
-                time: None,
-                cas: None,
-            }));
+            retval.push((
+                key.to_string(),
+                RawValue {
+                    data: buffer.clone(),
+                    flags,
+                    time: None,
+                    cas: None,
+                },
+            ));
         }
     }
-
 
     /// STORE function. Stores provided data using the provided key.
     /// data.time determines for how many seconds memcached should keep the data. Setting it to
@@ -303,7 +312,7 @@ impl Meta {
     ) -> Result<(), MemcacheError> {
         debug!("set {}", key);
         // key cannot contain control characters or space
-        if check_key_invalid(&key) {
+        if check_key_invalid(key) {
             error!("set: invalid key");
             return Err(MemcacheError::BadKey);
         }
@@ -321,15 +330,15 @@ impl Meta {
             .and(io.write_all(&data.data).await)
             .and(io.write_all(&marker).await)
             .and(io.flush().await)
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
 
         let mut response_hdr: Vec<u8> = Vec::new();
         let _ = io
             .read_until(0xA, &mut response_hdr)
             .await
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
         if response_hdr.len() >= 2 {
-            response_hdr.truncate(response_hdr.len()-2);
+            response_hdr.truncate(response_hdr.len() - 2);
         }
 
         let Ok(response_hdr) = String::from_utf8(response_hdr) else {
@@ -342,9 +351,90 @@ impl Meta {
             return Err(MemcacheError::BadServerResponse);
         };
         match response_cmd {
-            "OK" => { debug!("set: OK"); Ok(()) },
-            "HD" => { debug!("set: OK"); Ok(()) },
-            "CLIENT_ERROR" => { debug!("set: client error"); Err(MemcacheError::BadQuery) },
+            "OK" => {
+                debug!("set: OK");
+                Ok(())
+            }
+            "HD" => {
+                debug!("set: OK");
+                Ok(())
+            }
+            "CLIENT_ERROR" => {
+                debug!("set: client error");
+                Err(MemcacheError::BadQuery)
+            }
+            x => {
+                error!("set: unexpected reponse {}", x);
+                Err(MemcacheError::BadServerResponse)
+            }
+        }
+    }
+
+    /// STORE function. Stores provided data using the provided key.
+    /// data.time determines for how many seconds memcached should keep the data. Setting it to
+    /// None will make memcached keep the data for as long as possible (data may still be dropped
+    /// if memcached reaches its memory limit)
+    /// WARNING: CAS is not yet supported.
+    pub async fn set_multiple<'a, 'b, T: AsyncReadWriteUnpin>(
+        &self,
+        io: &mut T,
+        keydata: &[(&str, &RawValue)],
+    ) -> Result<(), MemcacheError> {
+        debug!("set_multiple");
+        // key cannot contain control characters or space
+        let marker = [0x0D, 0x0A];
+        for (key, data) in keydata.iter() {
+            if check_key_invalid(key) {
+                error!("set: invalid key");
+                return Err(MemcacheError::BadKey);
+            }
+            let request = format!(
+                "ms {} S{} T{} F{}\r\n",
+                key,
+                data.data.len(),
+                data.time.unwrap_or(0),
+                data.flags
+            )
+            .into_bytes();
+            io.write_all(&request)
+                .await
+                .and(io.write_all(&data.data).await)
+                .and(io.write_all(&marker).await)
+                .map_err(MemcacheError::IOError)?;
+        }
+        io.flush().await.map_err(MemcacheError::IOError)?;
+
+        let mut response_hdr: Vec<u8> = Vec::new();
+        let _ = io
+            .read_until(0xA, &mut response_hdr)
+            .await
+            .map_err(MemcacheError::IOError)?;
+        if response_hdr.len() >= 2 {
+            response_hdr.truncate(response_hdr.len() - 2);
+        }
+
+        let Ok(response_hdr) = String::from_utf8(response_hdr) else {
+            error!("set: bad header");
+            return Err(MemcacheError::BadServerResponse);
+        };
+        let mut response_hdr = response_hdr.split_ascii_whitespace();
+
+        let Some(response_cmd) = response_hdr.next() else {
+            return Err(MemcacheError::BadServerResponse);
+        };
+        match response_cmd {
+            "OK" => {
+                debug!("set: OK");
+                Ok(())
+            }
+            "HD" => {
+                debug!("set: OK");
+                Ok(())
+            }
+            "CLIENT_ERROR" => {
+                debug!("set: client error");
+                Err(MemcacheError::BadQuery)
+            }
             x => {
                 error!("set: unexpected reponse {}", x);
                 Err(MemcacheError::BadServerResponse)
@@ -360,7 +450,7 @@ impl Meta {
     ) -> Result<Option<()>, MemcacheError> {
         debug!("delete: {}", key);
         // key cannot contain control characters or space
-        if check_key_invalid(&key) {
+        if check_key_invalid(key) {
             error!("delete: invalid key");
             return Err(MemcacheError::BadKey);
         }
@@ -368,15 +458,15 @@ impl Meta {
         io.write_all(&request)
             .await
             .and(io.flush().await)
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
 
         let mut response_hdr: Vec<u8> = Vec::new();
         let _ = io
             .read_until(0xA, &mut response_hdr)
             .await
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
         if response_hdr.len() >= 2 {
-            response_hdr.truncate(response_hdr.len()-2);
+            response_hdr.truncate(response_hdr.len() - 2);
         }
 
         if response_hdr == b"DELETED" {
@@ -386,7 +476,10 @@ impl Meta {
             debug!("delete: NOT FOUND");
             return Ok(None);
         }
-        error!("delte: malformed reponse {}", String::from_utf8_lossy(&response_hdr));
+        error!(
+            "delte: malformed reponse {}",
+            String::from_utf8_lossy(&response_hdr)
+        );
         Err(MemcacheError::BadServerResponse)
     }
 
@@ -399,13 +492,13 @@ impl Meta {
         io.write_all(request)
             .await
             .and(io.flush().await)
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
 
         let mut response_hdr: Vec<u8> = Vec::new();
         let _ = io
             .read_until(0xA, &mut response_hdr)
             .await
-            .map_err(|x| MemcacheError::IOError(x))?;
+            .map_err(MemcacheError::IOError)?;
         let Ok(response_hdr) = String::from_utf8(response_hdr) else {
             return Err(MemcacheError::BadServerResponse);
         };
